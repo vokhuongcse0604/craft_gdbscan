@@ -28,7 +28,19 @@ import zipfile
 
 from craft import CRAFT
 from collections import OrderedDict
+import copy
 
+from io import StringIO
+from pdfminer.converter import TextConverter
+from pdfminer.layout import LAParams
+from pdfminer.pdfdocument import PDFDocument
+from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
+from pdfminer.pdfpage import PDFPage
+from pdfminer.pdfparser import PDFParser
+from os import listdir
+from os.path import isfile, join
+
+# Initialize parameters for the CRAFT model
 text_threshold = 0.7
 low_text = 0.4
 link_threshold = 0.4
@@ -111,16 +123,14 @@ def test_net(net, image, text_threshold, link_threshold, low_text, cuda, poly, r
 
     return boxes, polys, ret_score_text
 
-
+# Load CRAFT model and set eval stage
 net = CRAFT()
 net.load_state_dict(copyStateDict(torch.load(trained_model_path, map_location='cpu')))
 net.eval()
 
-import copy
-
+# Clustering stage
 UNCLASSIFIED = -2
 NOISE = -1
-
 
 class Point:
     def __init__(self, x, y, id):
@@ -134,6 +144,7 @@ class Point:
             .format(self.x, self.y, self.id, self.cluster_id)
 
 
+# Adjust 2 parameter like 160000 and 225 to suitable with the image
 def n_pred(p1, p2):
     return (p1.x - p2.x) ** 2 / 160000 + (p1.y - p2.y) ** 2 / 225 <= 1
 
@@ -222,16 +233,6 @@ class Points:
     def labels(self):
         return set(map(lambda x: x.cluster_id, self.points))
 
-from io import StringIO
-
-from pdfminer.converter import TextConverter
-from pdfminer.layout import LAParams
-from pdfminer.pdfdocument import PDFDocument
-from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
-from pdfminer.pdfpage import PDFPage
-from pdfminer.pdfparser import PDFParser
-
-
 def imgtotext(pic):
     # croped = cv2.imread(file_path, cv2.IMREAD_GRAYSCALE)
     croped = cv2.cvtColor(pic, cv2.COLOR_BGR2GRAY)
@@ -271,15 +272,13 @@ def extract_pdf(path):
             clean_segs.append(x)
     return clean_segs
 
-from os import listdir
-from os.path import isfile, join
 
+# Load data from image directory
 files = ['../pdf_process/split_img_doc_1/' + f for f in listdir('../pdf_process/split_img_doc_1/') if isfile(join('../pdf_process/split_img_doc_1/', f))]
 pdf_directory = '../pdf_process/split_pdf_doc/'
 image_index = 0
 # files = ['./split_img_doc_test/' + f for f in listdir('./split_img_doc_test/') if isfile(join('./split_img_doc_test/', f))]
 # pdf_directory = './split_pdf_doc_test/'
-
 
 dataset = []
 
@@ -294,8 +293,10 @@ for file_path in files:
     # print(real_results)
 
     image = loadImage(file_path)
+    # Apply CRAFT model on the image to get text blocks
     bboxes, polys, score_text = test_net(net, image, text_threshold, link_threshold, low_text, cuda, poly, refine_net)
 
+    # Get central points from these text blocks
     poly_indexes = {}
     central_poly_indexes = []
     for i in range(len(polys)):
@@ -308,15 +309,16 @@ for file_path in files:
     for idx, x in enumerate(central_poly_indexes):
         point = Point(x[idx][0], x[idx][1], idx)
         X.append(point)
+
+    # CLuster these central points by G-DBSCAN 
     clustered = GDBSCAN(Points(X), n_pred, 1, w_card)
-    # print(clustered)
 
     cluster_values = []
     for cluster in clustered:
         sort_cluster = sorted(cluster, key=lambda elem: (elem.x, elem.y))
         # print(sort_cluster)
         max_point_id = sort_cluster[len(sort_cluster) - 1].id
-        min_point_id = sort_cluster[0].iderttjlej
+        min_point_id = sort_cluster[0].id
         # print(poly_indexes.get(min_point_id))
         max_rectangle = sorted(poly_indexes[max_point_id], key=lambda elem: (elem[0], elem[1]))
         min_rectangle = sorted(poly_indexes[min_point_id], key=lambda elem: (elem[0], elem[1]))
@@ -358,6 +360,7 @@ for file_path in files:
     show_time = False
     refine_net = None
 
+# Create train dataset
 df = pd.DataFrame(dataset, columns=['ocr', 'ground_trust'])
 df.to_csv('dataset.csv', index=False)
 
